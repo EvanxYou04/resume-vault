@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useSession } from 'next-auth/react';
 
 interface ResumeFormData {
     title: string;
@@ -8,7 +9,12 @@ interface ResumeFormData {
     file: File | null;
 }
 
-export default function ResumeUploader({ userId }: { userId: string }) {
+export default function ResumeUploader({
+    onUploadSuccess
+}: {
+    onUploadSuccess?: () => void;
+}) {
+    const { data: session, status } = useSession();
     const [formData, setFormData] = useState<ResumeFormData>({
         title: '',
         tags: [],
@@ -18,6 +24,30 @@ export default function ResumeUploader({ userId }: { userId: string }) {
     const [isUploading, setIsUploading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState(false);
+
+    // Show loading state while session is being fetched
+    if (status === 'loading') {
+        return (
+            <div className="max-w-md mx-auto mt-8 p-6 bg-white rounded-lg shadow-md">
+                <p>Loading...</p>
+            </div>
+        );
+    }
+
+    // Show sign-in prompt if not authenticated
+    if (status === 'unauthenticated') {
+        return (
+            <div className="max-w-md mx-auto mt-8 p-6 bg-white rounded-lg shadow-md">
+                <p className="text-gray-600 mb-4">Please sign in to upload resumes.</p>
+                <button
+                    onClick={() => window.location.href = '/api/auth/signin'}
+                    className="w-full bg-blue-500 text-white py-2 px-4 rounded-md hover:bg-blue-600"
+                >
+                    Sign In
+                </button>
+            </div>
+        );
+    }
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -64,12 +94,13 @@ export default function ResumeUploader({ userId }: { userId: string }) {
 
         try {
             // Step 1: Get upload URL
+            console.log('Step 1: Getting upload URL...');
             const uploadResponse = await fetch('/api/upload-url', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     fileName: formData.file.name,
-                    fileType: formData.file.type,
+                    contentType: formData.file.type,
                 }),
             });
 
@@ -78,8 +109,10 @@ export default function ResumeUploader({ userId }: { userId: string }) {
             }
 
             const { uploadUrl, fileKey } = await uploadResponse.json();
+            console.log('Step 1 complete: Got upload URL and fileKey:', fileKey);
 
             // Step 2: Upload file to S3
+            console.log('Step 2: Uploading to S3...');
             const uploadToS3 = await fetch(uploadUrl, {
                 method: 'PUT',
                 body: formData.file,
@@ -88,12 +121,22 @@ export default function ResumeUploader({ userId }: { userId: string }) {
                 },
             });
 
+            console.log('S3 upload response status:', uploadToS3.status);
             if (!uploadToS3.ok) {
-                throw new Error('Failed to upload file');
+                const errorText = await uploadToS3.text();
+                console.error('S3 upload failed:', errorText);
+                throw new Error(`Failed to upload file to S3: ${uploadToS3.status}`);
             }
+            console.log('Step 2 complete: File uploaded to S3');
 
             // Step 3: Save metadata to database
+            console.log('Step 3: Saving metadata to database...');
             const fileUrl = `https://${process.env.NEXT_PUBLIC_AWS_S3_BUCKET}.s3.${process.env.NEXT_PUBLIC_AWS_REGION}.amazonaws.com/${fileKey}`;
+            console.log('Environment variables:', {
+                bucket: process.env.NEXT_PUBLIC_AWS_S3_BUCKET,
+                region: process.env.NEXT_PUBLIC_AWS_REGION
+            });
+            console.log('File URL:', fileUrl);
 
             const resumeResponse = await fetch('/api/resumes', {
                 method: 'POST',
@@ -102,19 +145,24 @@ export default function ResumeUploader({ userId }: { userId: string }) {
                     title: formData.title,
                     fileUrl,
                     tags: formData.tags,
-                    userId,
                 }),
             });
 
             if (!resumeResponse.ok) {
-                throw new Error('save resume metadata');
+                const errorText = await resumeResponse.text();
+                console.error('Database save failed:', errorText);
+                throw new Error('Failed to save resume metadata');
             }
+            console.log('Step 3 complete: Metadata saved to database');
 
             setSuccess(true);
             setFormData({ title: '', tags: [], file: null });
             // Reset file input
             const fileInput = document.getElementById('file-input') as HTMLInputElement;
             if (fileInput) fileInput.value = '';
+
+            // Notify parent component of successful upload
+            onUploadSuccess?.();
 
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Upload failed');

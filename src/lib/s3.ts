@@ -14,6 +14,7 @@ export async function getUploadUrl(fileName: string, contentType: string) {
     Bucket: process.env.AWS_S3_BUCKET!,
     Key: fileName,
     ContentType: contentType,
+    // Removed ACL since bucket doesn't support ACLs
   });
 
   const url = await getSignedUrl(s3, command, { expiresIn: 60 }); // 1 minute

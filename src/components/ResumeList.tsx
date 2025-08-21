@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, forwardRef, useImperativeHandle } from 'react';
+import { useSession } from 'next-auth/react';
 
 interface Resume {
   id: string;
@@ -11,18 +12,37 @@ interface Resume {
   updatedAt: string;
 }
 
-export default function ResumeList({ userId }: { userId: string }) {
+interface ResumeListRef {
+  refreshResumes: () => void;
+}
+
+const ResumeList = forwardRef<ResumeListRef, {}>(({ }, ref) => {
+  const { data: session, status } = useSession();
   const [resumes, setResumes] = useState<Resume[]>([]);
+  const [filteredResumes, setFilteredResumes] = useState<Resume[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
-    fetchResumes();
-  }, [userId]);
+    if (status !== 'loading') {
+      fetchResumes();
+    }
+  }, [status]);
+
+  useEffect(() => {
+    // Filter resumes based on search term
+    const filtered = resumes.filter(resume =>
+      resume.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      resume.tags.some(tag => tag.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
+    setFilteredResumes(filtered);
+  }, [resumes, searchTerm]);
 
   const fetchResumes = async () => {
     try {
-      const response = await fetch(`/api/resumes?userId=${userId}`);
+      setLoading(true);
+      const response = await fetch('/api/resumes');
       if (!response.ok) {
         throw new Error('Failed to fetch resumes');
       }
@@ -35,6 +55,53 @@ export default function ResumeList({ userId }: { userId: string }) {
     }
   };
 
+  // Expose fetchResumes function to parent via ref
+  useImperativeHandle(ref, () => ({
+    refreshResumes: fetchResumes
+  }));
+
+  const deleteResume = async (resumeId: string) => {
+    if (!confirm('Are you sure you want to delete this resume?')) return;
+
+    try {
+      const response = await fetch(`/api/resumes?id=${resumeId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to delete resume');
+      }
+
+      // Refresh the list after deletion
+      fetchResumes();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete resume');
+    }
+  };
+
+  // Show loading state while session is being fetched
+  if (status === 'loading') {
+    return <div className="text-center py-4">Loading...</div>;
+  }
+
+  // Show sign-in prompt if not authenticated
+  if (status === 'unauthenticated') {
+    return (
+      <div className="space-y-4">
+        <h2 className="text-xl font-semibold">Your Resumes</h2>
+        <div className="text-center py-8">
+          <p className="text-gray-600 mb-4">Please sign in to view your resumes.</p>
+          <button
+            onClick={() => window.location.href = '/api/auth/signin'}
+            className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+          >
+            Sign In
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return <div className="text-center py-4">Loading resumes...</div>;
   }
@@ -43,6 +110,33 @@ export default function ResumeList({ userId }: { userId: string }) {
     return (
       <div className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3">
         {error}
+      </div>
+    );
+  }
+
+  if (filteredResumes.length === 0 && searchTerm) {
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-xl font-semibold">Your Resumes</h2>
+          <button
+            onClick={fetchResumes}
+            disabled={loading}
+            className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-300"
+          >
+            {loading ? 'Loading...' : 'Refresh'}
+          </button>
+        </div>
+        <input
+          type="text"
+          placeholder="Search resumes by title or tags..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <div className="text-center py-8 text-gray-500">
+          No resumes found matching "{searchTerm}"
+        </div>
       </div>
     );
   }
@@ -57,19 +151,44 @@ export default function ResumeList({ userId }: { userId: string }) {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-semibold mb-4">Your Resumes</h2>
-      {resumes.map((resume) => (
+      <div className="flex justify-between items-center">
+        <h2 className="text-xl font-semibold">Your Resumes</h2>
+        <button
+          onClick={fetchResumes}
+          disabled={loading}
+          className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-300"
+        >
+          {loading ? 'Loading...' : 'Refresh'}
+        </button>
+      </div>
+      <input
+        type="text"
+        placeholder="Search resumes by title or tags..."
+        value={searchTerm}
+        onChange={(e) => setSearchTerm(e.target.value)}
+        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      {filteredResumes.map((resume) => (
         <div
           key={resume.id}
           className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow"
         >
           <div className="flex justify-between items-start mb-2">
             <h3 className="font-medium text-lg">{resume.title}</h3>
-            <span className="text-sm text-gray-500">
-              {new Date(resume.createdAt).toLocaleDateString()}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-500">
+                {new Date(resume.createdAt).toLocaleDateString()}
+              </span>
+              <button
+                onClick={() => deleteResume(resume.id)}
+                className="text-red-500 hover:text-red-700 text-sm"
+                title="Delete resume"
+              >
+                🗑️
+              </button>
+            </div>
           </div>
-          
+
           {resume.tags.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3">
               {resume.tags.map((tag) => (
@@ -82,9 +201,9 @@ export default function ResumeList({ userId }: { userId: string }) {
               ))}
             </div>
           )}
-          
+
           <a
-            href={resume.fileUrl}
+            href={`/api/serve-file?key=${encodeURIComponent(resume.fileUrl.split('.amazonaws.com/')[1])}`}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center text-blue-600 hover:text-blue-700 text-sm"
@@ -99,4 +218,8 @@ export default function ResumeList({ userId }: { userId: string }) {
       ))}
     </div>
   );
-}
+});
+
+ResumeList.displayName = 'ResumeList';
+
+export default ResumeList;
